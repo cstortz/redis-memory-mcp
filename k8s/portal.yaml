@@ -20,7 +20,8 @@ data:
     <body>
       <h1>Redis Memory MCP</h1>
       <p>Connect over TCP to <strong>monorepo-mcp.dev.stortz.tech:3006</strong></p>
-      <p>Cursor config: see <a href="endpoints.json">endpoints.json</a></p>
+      <p>URI: <a href="/redis-memory/">http://monorepo-mcp.dev.stortz.tech/redis-memory/</a></p>
+      <p>Cursor config: see <a href="endpoints.json">endpoints.json</a> · <a href="/">all servers</a></p>
     </body>
     </html>
   endpoints.json: |
@@ -31,6 +32,8 @@ data:
         "redis-memory-mcp": {
           "host": "monorepo-mcp.dev.stortz.tech",
           "port": 3006,
+          "endpoint": "monorepo-mcp.dev.stortz.tech:3006",
+          "uri": "http://monorepo-mcp.dev.stortz.tech/redis-memory/",
           "protocol": "tcp",
           "socat": "socat TCP:monorepo-mcp.dev.stortz.tech:3006 STDIO"
         }
