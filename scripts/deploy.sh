@@ -37,6 +37,11 @@ deploy() {
   kubectl apply -f k8s/mcp-redis-memory.yaml
   kubectl apply -f k8s/portal.yaml
   kubectl apply -f k8s/ingress.yaml
+  kubectl create configmap mcp-redis-memory-src -n "$NAMESPACE" \
+    --from-file=memory_mcp.py=server/memory_mcp.py \
+    --from-file=tcp_server.py=server/tcp_server.py \
+    --from-file=INSTRUCTIONS.md=server/INSTRUCTIONS.md \
+    --dry-run=client -o yaml | kubectl apply -f -
   kubectl set image deployment/mcp-redis-memory \
     "mcp-redis-memory=${IMAGE_PREFIX}/mcp-server:${IMAGE_TAG}" \
     -n "$NAMESPACE"
