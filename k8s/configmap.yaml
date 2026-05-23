@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-memory-config
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-memory
+data:
+  REDIS_URL: "redis://redis-stack:6379/0"
+  EMBED_URL: "http://embeddings:80"
+  INDEX_NAME: "idx:memories"
+  MCP_HOST: "0.0.0.0"
+  MCP_TCP_PORT: "3006"
+  LOG_LEVEL: "INFO"
+  MCP_PUBLIC_HOST: "monorepo-mcp.dev.stortz.tech"
+  MCP_PUBLIC_URL: "https://monorepo-mcp.dev.stortz.tech/redis-memory/"
+  MCP_MEMORY_PORT: "3006"

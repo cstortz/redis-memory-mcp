@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: redis-memory
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-memory
+    environment: dev
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    external-dns.alpha.kubernetes.io/hostname: monorepo-mcp.dev.stortz.tech
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: monorepo-mcp.dev.stortz.tech
+      http:
+        paths:
+          - path: /redis-memory(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: redis-memory-portal
+                port:
+                  number: 80

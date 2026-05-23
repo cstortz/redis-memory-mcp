@@ -21,7 +21,7 @@ SERVER_DIR="$WORK_DIR/server"
 if [ ! -d "$SERVER_DIR" ]; then
   log "Downloading server source..."
   mkdir -p "$SERVER_DIR"
-  for f in memory_mcp.py Dockerfile pyproject.toml; do
+  for f in memory_mcp.py Dockerfile pyproject.toml INSTRUCTIONS.md tcp_server.py; do
     curl -fsSL "$REPO_URL/server/$f" -o "$SERVER_DIR/$f"
   done
 fi

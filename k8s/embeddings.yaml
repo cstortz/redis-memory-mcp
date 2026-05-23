@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embeddings
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: embeddings
+    app.kubernetes.io/component: inference
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: embeddings
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: embeddings
+        app.kubernetes.io/component: inference
+    spec:
+      containers:
+        - name: tei
+          image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+          args:
+            - --model-id
+            - sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            - name: HF_MODEL_ID
+              value: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+          volumeMounts:
+            - name: cache
+              mountPath: /data
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: embeddings-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embeddings
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: embeddings
+spec:
+  selector:
+    app.kubernetes.io/name: embeddings
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

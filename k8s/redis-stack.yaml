@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-stack
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-stack
+    app.kubernetes.io/component: datastore
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-stack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-stack
+        app.kubernetes.io/component: datastore
+    spec:
+      containers:
+        - name: redis-stack
+          image: redis/redis-stack:latest
+          ports:
+            - name: redis
+              containerPort: 6379
+            - name: insight
+              containerPort: 8001
+          env:
+            - name: REDIS_ARGS
+              value: >-
+                --save 900 1 --save 300 10 --appendonly yes --appendfsync everysec
+                --maxmemory 2gb --maxmemory-policy volatile-lru
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2560Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-stack-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-stack
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-stack
+spec:
+  selector:
+    app.kubernetes.io/name: redis-stack
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: insight
+      port: 8001
+      targetPort: 8001

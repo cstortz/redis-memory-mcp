@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-init-index
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-init
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: redis-init
+          image: redis/redis-stack:latest
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              until redis-cli -h redis-stack ping; do sleep 2; done
+              redis-cli -h redis-stack FT.CREATE idx:memories ON HASH PREFIX 1 mem: SCHEMA \
+                label TEXT text TEXT code TEXT tags TAG SEPARATOR , \
+                vector VECTOR HNSW 6 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE \
+                timestamp NUMERIC || echo "Index already exists"

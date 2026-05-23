@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-redis-memory
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: mcp-redis-memory
+    app.kubernetes.io/component: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-redis-memory
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mcp-redis-memory
+        app.kubernetes.io/component: mcp-server
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      initContainers:
+        - name: wait-redis
+          image: redis/redis-stack:latest
+          command:
+            - bash
+            - -c
+            - |
+              until redis-cli -h redis-stack ping; do echo waiting for redis; sleep 2; done
+        - name: wait-embeddings
+          image: curlimages/curl:8.5.0
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://embeddings/health; do echo waiting for embeddings; sleep 5; done
+      containers:
+        - name: mcp-redis-memory
+          image: ghcr.io/sergesha/redis-memory-mcp/mcp-server:latest
+          imagePullPolicy: Always
+          command: ["python", "tcp_server.py"]
+          ports:
+            - name: mcp-tcp
+              containerPort: 3006
+          envFrom:
+            - configMapRef:
+                name: redis-memory-config
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          livenessProbe:
+            tcpSocket:
+              port: mcp-tcp
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: mcp-tcp
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-redis-memory
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: mcp-redis-memory
+spec:
+  selector:
+    app.kubernetes.io/name: mcp-redis-memory
+  ports:
+    - name: mcp-tcp
+      port: 3006
+      targetPort: mcp-tcp
+  type: ClusterIP

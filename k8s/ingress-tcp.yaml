@@ -1,0 +1,15 @@
+# TCP passthrough for redis-memory MCP on monorepo-mcp.dev.stortz.tech:3006
+# (HTTP docs at https://monorepo-mcp.dev.stortz.tech/redis-memory/)
+#
+# Client (Cursor):
+#   socat TCP:monorepo-mcp.dev.stortz.tech:3006 STDIO
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tcp-services
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: redis-memory
+    app.kubernetes.io/part-of: monorepo-mcp.dev.stortz.tech
+data:
+  "3006": "redis-memory/mcp-redis-memory:3006"

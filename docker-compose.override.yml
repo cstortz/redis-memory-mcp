@@ -1,0 +1,6 @@
+# Local port overrides — 6379/8001 are used by other stacks on this host.
+services:
+  redis:
+    ports: !override
+      - "6380:6379"
+      - "8011:8001"

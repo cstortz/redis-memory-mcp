@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-memory-portal
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-memory-portal
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <title>Redis Memory MCP</title>
+      <style>
+        body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+        code { background: #f4f4f4; padding: 0.15rem 0.35rem; border-radius: 4px; }
+      </style>
+    </head>
+    <body>
+      <h1>Redis Memory MCP</h1>
+      <p>Connect over TCP to <strong>monorepo-mcp.dev.stortz.tech:3006</strong></p>
+      <p>Cursor <code>mcp.json</code>:</p>
+      <pre><code>"redis-memory-mcp": {
+  "command": "socat",
+  "args": ["TCP:monorepo-mcp.dev.stortz.tech:3006", "STDIO"]
+}</code></pre>
+      <p><a href="endpoints.json">endpoints.json</a></p>
+    </body>
+    </html>
+  endpoints.json: |
+    {
+      "environment": "dev",
+      "host": "monorepo-mcp.dev.stortz.tech",
+      "servers": {
+        "redis-memory-mcp": {
+          "host": "monorepo-mcp.dev.stortz.tech",
+          "port": 3006,
+          "protocol": "tcp",
+          "socat": "socat TCP:monorepo-mcp.dev.stortz.tech:3006 STDIO"
+        }
+      }
+    }
+  nginx.conf: |
+    events { worker_connections 1024; }
+    http {
+      include       /etc/nginx/mime.types;
+      default_type  application/octet-stream;
+      sendfile      on;
+      server {
+        listen 8080;
+        location / {
+          root /usr/share/nginx/html;
+          index index.html;
+          try_files $uri $uri/ =404;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-memory-portal
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-memory-portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-memory-portal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-memory-portal
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /endpoints.json
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: content
+          configMap:
+            name: redis-memory-portal
+            items:
+              - key: index.html
+                path: index.html
+              - key: endpoints.json
+                path: endpoints.json
+        - name: nginx-conf
+          configMap:
+            name: redis-memory-portal
+            items:
+              - key: nginx.conf
+                path: nginx.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-memory-portal
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-memory-portal
+spec:
+  selector:
+    app.kubernetes.io/name: redis-memory-portal
+  ports:
+    - port: 80
+      targetPort: 8080

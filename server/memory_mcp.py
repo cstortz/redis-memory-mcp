@@ -1,8 +1,9 @@
 """
 Redis Memory MCP — Server
-Two tool sets:
-  kv_*  — simple key/value store (instant, no embeddings)
-  mem_* — semantic memory (vector search via TEI + Redis HNSW)
+Tool sets:
+  kv_*        — simple key/value store (instant, no embeddings)
+  mem_*       — semantic memory (vector search via TEI + Redis HNSW)
+  playbook_*  — cached MCP workflow runbooks (any server, any task)
 
 TTL strategy (volatile-lru):
   - Every key has a TTL (default 90 days)
@@ -10,8 +11,10 @@ TTL strategy (volatile-lru):
   - Unused facts expire after TTL → Redis evicts them under memory pressure
 """
 
-import re, struct, time, uuid, os
+import json, re, struct, time, uuid, os
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 import httpx
 import redis.asyncio as aio_redis
@@ -20,12 +23,24 @@ from mcp.server.fastmcp import FastMCP
 REDIS_URL    = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 EMBED_URL    = os.getenv("EMBED_URL",    "http://localhost:8081")
 INDEX        = os.getenv("INDEX_NAME",   "idx:memories")
-MEM_PREFIX   = "mem:"
-KV_PREFIX    = "kv:"
-TOP_K        = int(os.getenv("TOP_K",   "5"))
-DEFAULT_TTL  = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
+MEM_PREFIX       = "mem:"
+KV_PREFIX        = "kv:"
+PLAYBOOK_PREFIX  = "playbook:"
+PLAYBOOK_TAG     = "playbook"
+TASK_ID_RE       = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+TOP_K            = int(os.getenv("TOP_K",   "5"))
+DEFAULT_TTL      = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
+_SERVER_DIR      = Path(__file__).resolve().parent
 
-mcp = FastMCP("Redis Memory")
+
+def _load_instructions() -> str | None:
+    path = _SERVER_DIR / "INSTRUCTIONS.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return None
+
+
+mcp = FastMCP("Redis Memory", instructions=_load_instructions())
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -75,9 +90,104 @@ def _fmt_ttl(seconds: int) -> str:
     return f"{hours}h"
 
 def _sanitize_tag(tag: str) -> str:
-    """Strip tag to safe chars only (letters, digits, hyphens, underscores)."""
+    """Safe TAG index token: alnum + underscores (hyphens become underscores for RediSearch)."""
     cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", tag.strip())
-    return cleaned
+    return cleaned.replace("-", "_")
+
+
+def _sanitize_task_id(task_id: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9-]", "-", task_id.strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if not slug or not TASK_ID_RE.match(slug):
+        raise ValueError(
+            f"Invalid task_id '{task_id}'. Use lowercase letters, digits, and hyphens (3-64 chars)."
+        )
+    return slug
+
+
+def _playbook_kv_key(task_id: str) -> str:
+    return f"{PLAYBOOK_PREFIX}{_sanitize_task_id(task_id)}"
+
+
+def _parse_tags_csv(tags: str) -> str:
+    if not tags:
+        return ""
+    return ",".join(_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t))
+
+
+def _parse_json_field(raw: str, field_name: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON: {exc}") from exc
+
+
+def _validate_playbook(doc: dict[str, Any]) -> dict[str, Any]:
+    required = ("task_id", "description", "steps")
+    for key in required:
+        if key not in doc:
+            raise ValueError(f"Playbook missing required field: {key}")
+    _sanitize_task_id(str(doc["task_id"]))
+    if not isinstance(doc["steps"], list) or not doc["steps"]:
+        raise ValueError("Playbook steps must be a non-empty JSON array")
+    doc.setdefault("version", 1)
+    doc.setdefault("triggers", [])
+    doc.setdefault("mcp_servers", [])
+    doc.setdefault("variables", [])
+    return doc
+
+
+async def _load_playbook_doc(r, task_id: str) -> dict[str, Any] | None:
+    data = await r.hgetall(f"{KV_PREFIX}{_playbook_kv_key(task_id)}")
+    if not data:
+        return None
+    return _validate_playbook(json.loads(_decode(data[b"value"])))
+
+
+async def _playbook_search_text(query: str, mcp_server: str, top_k: int) -> str:
+    tags = PLAYBOOK_TAG
+    if mcp_server:
+        safe = _sanitize_tag(mcp_server)
+        if safe:
+            tags = f"{PLAYBOOK_TAG},{safe}"
+    return await mem_search(query=query, tags=tags, top_k=top_k)
+
+
+async def _store_memory(
+    text: str,
+    *,
+    label: str = "",
+    code: str = "",
+    tags: str = "",
+    ttl_days: int = 90,
+) -> str:
+    embed_input = f"{text}\n{code}" if code else text
+    vector_bytes = _encode(await _embed(embed_input))
+    mid = str(uuid.uuid4())
+
+    r = _redis()
+    try:
+        await _ensure_index(r)
+        redis_key = f"{MEM_PREFIX}{mid}"
+        mapping = {
+            b"text": text.encode(),
+            b"vector": vector_bytes,
+            b"timestamp": str(int(time.time())).encode(),
+            b"ttl_days": str(ttl_days).encode(),
+        }
+        safe_tags = _parse_tags_csv(tags)
+        if label:
+            mapping[b"label"] = label.encode()
+        if code:
+            mapping[b"code"] = code.encode()
+        if safe_tags:
+            mapping[b"tags"] = safe_tags.encode()
+        await r.hset(redis_key, mapping=mapping)
+        if ttl_days > 0:
+            await r.expire(redis_key, ttl_days * 86400)
+    finally:
+        await r.aclose()
+    return mid
 
 
 # ── KV tools ──────────────────────────────────────────────────────────────────
@@ -229,32 +339,12 @@ async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", t
     Returns the memory ID (use mem_delete to remove it).
     """
     embed_input = f"{text}\n{code}" if code else text
-    vector_bytes = _encode(await _embed(embed_input))
-    mid = str(uuid.uuid4())
-
-    r = _redis()
-    try:
-        await _ensure_index(r)
-        redis_key = f"{MEM_PREFIX}{mid}"
-        mapping = {
-            b"text":      text.encode(),
-            b"vector":    vector_bytes,
-            b"timestamp": str(int(time.time())).encode(),
-            b"ttl_days":  str(ttl_days).encode(),
-        }
-        safe_tags = ",".join(_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t)) if tags else ""
-        if label:     mapping[b"label"] = label.encode()
-        if code:      mapping[b"code"]  = code.encode()
-        if safe_tags: mapping[b"tags"]  = safe_tags.encode()
-        await r.hset(redis_key, mapping=mapping)
-        if ttl_days > 0:
-            await r.expire(redis_key, ttl_days * 86400)
-    finally:
-        await r.aclose()
+    mid = await _store_memory(text, label=label, code=code, tags=tags, ttl_days=ttl_days)
 
     display = f"'{label}'" if label else f"'{text[:60]}'"
     parts = [f"label={display}"]
     if code:      parts.append(f"code='{code[:30]}'")
+    safe_tags = _parse_tags_csv(tags)
     if safe_tags: parts.append(f"tags=[{safe_tags}]")
     ttl_info = f"ttl={ttl_days}d (resets on hit)" if ttl_days > 0 else "no expiry"
     return f"Saved mem[{mid[:8]}] {', '.join(parts)}  {ttl_info}"
@@ -395,6 +485,279 @@ async def mem_delete(memory_id: str) -> str:
     finally:
         await r.aclose()
     return f"Deleted mem[{memory_id}]" if deleted else f"Not found: '{memory_id}'"
+
+
+# ── MCP workflow playbooks (any server) ───────────────────────────────────────
+
+@mcp.tool()
+async def playbook_get(task_id: str) -> str:
+    """Load a cached MCP workflow by exact task_id — use before rediscovering tool steps.
+
+    Playbooks store reusable procedures: which MCP servers/tools to call, in what order,
+    with parameterized args/SQL. Works for any MCP server (postgres, filesystem, REST, etc.).
+
+    Parameters:
+    - task_id (required): Stable slug, e.g. 'sync-user-profile', 'export-report-csv'.
+    """
+    r = _redis()
+    try:
+        redis_key = f"{KV_PREFIX}{_playbook_kv_key(task_id)}"
+        data = await r.hgetall(redis_key)
+        if not data:
+            return f"No playbook found for task_id '{_sanitize_task_id(task_id)}'. Try playbook_search()."
+        ttl_days = int(_decode(data.get(b"ttl_days", b"0")) or 0)
+        if ttl_days > 0:
+            await r.expire(redis_key, ttl_days * 86400)
+        doc = _validate_playbook(json.loads(_decode(data[b"value"])))
+    finally:
+        await r.aclose()
+
+    return json.dumps(doc, indent=2)
+
+
+@mcp.tool()
+async def playbook_search(query: str, mcp_server: str = "", top_k: int = 3) -> str:
+    """Find a cached MCP workflow by natural language — fallback when task_id is unknown.
+
+    Searches playbook summaries indexed at save time. Optionally filter by MCP server slug
+    (e.g. mcp_server='postgres-mcp').
+
+    Parameters:
+    - query (required): User request or task description.
+    - mcp_server: Optional filter tag matching a server used in the playbook.
+    - top_k: Max results (default 3).
+
+    After a match, call playbook_get(task_id) for the full step list.
+    """
+    result = await _playbook_search_text(query, mcp_server, top_k)
+    if result == "No memories found.":
+        return "No playbooks found. Run discovery once, then playbook_save()."
+    return result
+
+
+@mcp.tool()
+async def playbook_save(
+    task_id: str,
+    description: str,
+    steps: str,
+    triggers: str = "",
+    mcp_servers: str = "",
+    variables: str = "",
+    version: int = 1,
+) -> str:
+    """Save or update a reusable MCP workflow runbook after a successful first execution.
+
+    Parameters:
+    - task_id (required): Stable slug (lowercase, hyphens). Example: 'create-report-from-db'.
+    - description (required): One-line summary of what the workflow accomplishes.
+    - steps (required): JSON array of step objects. Each step should include:
+        order, name, mcp_server (optional), tool, args (object), notes (optional).
+      Example:
+      [{"order":1,"name":"fetch_config","mcp_server":"postgres-mcp",
+        "tool":"execute_prepared_select","args":{"sql":"SELECT ..."},"notes":"..."}]
+    - triggers: Comma-separated example user phrases that should match this playbook.
+    - mcp_servers: Comma-separated MCP server slugs used (for filtering), e.g.
+      'postgres-mcp,filesystem-mcp,rest-api-mcp'.
+    - variables: Comma-separated runtime parameter names (company_name, user_id, etc.).
+    - version: Increment when steps or tools change (default 1).
+
+    Playbooks are permanent (no TTL) until deleted. Also indexes a semantic alias for search.
+    """
+    safe_id = _sanitize_task_id(task_id)
+    steps_list = _parse_json_field(steps, "steps")
+    if not isinstance(steps_list, list):
+        raise ValueError("steps must be a JSON array")
+
+    trigger_list = [t.strip() for t in triggers.split(",") if t.strip()]
+    server_list = [s.strip() for s in mcp_servers.split(",") if s.strip()]
+    variable_list = [v.strip() for v in variables.split(",") if v.strip()]
+
+    doc = _validate_playbook({
+        "task_id": safe_id,
+        "version": version,
+        "description": description.strip(),
+        "triggers": trigger_list,
+        "mcp_servers": server_list,
+        "variables": variable_list,
+        "steps": steps_list,
+    })
+    payload = json.dumps(doc, indent=2)
+
+    r = _redis()
+    mem_id = ""
+    try:
+        redis_key = f"{KV_PREFIX}{PLAYBOOK_PREFIX}{safe_id}"
+        existing = await r.hgetall(redis_key)
+        mem_id = _decode(existing.get(b"mem_id", b"")) if existing else ""
+
+        await r.hset(
+            redis_key,
+            mapping={
+                b"value": payload.encode(),
+                b"label": description.encode(),
+                b"tags": _parse_tags_csv(f"{PLAYBOOK_TAG},{mcp_servers}").encode(),
+                b"timestamp": str(int(time.time())).encode(),
+                b"ttl_days": b"0",
+            },
+        )
+
+        if mem_id:
+            await r.delete(f"{MEM_PREFIX}{mem_id}")
+    finally:
+        await r.aclose()
+
+    search_text = (
+        f"Playbook {safe_id}: {description}. "
+        f"MCP servers: {', '.join(server_list) or 'any'}. "
+        f"Triggers: {', '.join(trigger_list) or 'none'}. "
+        f"Variables: {', '.join(variable_list) or 'none'}. "
+        f"Use playbook_get('{safe_id}') for full steps."
+    )
+    server_tags = ",".join(_sanitize_tag(s) for s in server_list if _sanitize_tag(s))
+    mem_tags = PLAYBOOK_TAG if not server_tags else f"{PLAYBOOK_TAG},{server_tags}"
+    new_mem_id = await _store_memory(
+        search_text,
+        label=f"Playbook: {description[:50]}",
+        code=payload,
+        tags=mem_tags,
+        ttl_days=0,
+    )
+
+    r = _redis()
+    try:
+        await r.hset(f"{KV_PREFIX}{PLAYBOOK_PREFIX}{safe_id}", b"mem_id", new_mem_id.encode())
+    finally:
+        await r.aclose()
+
+    return (
+        f"Saved playbook[{safe_id}] v{version} — {len(steps_list)} steps, "
+        f"servers=[{', '.join(server_list) or 'any'}]  indexed for playbook_search"
+    )
+
+
+@mcp.tool()
+async def playbook_list(mcp_server: str = "") -> str:
+    """List cached MCP workflow playbooks.
+
+    Parameters:
+    - mcp_server: Optional filter — only playbooks tagged with this server slug.
+    """
+    r = _redis()
+    try:
+        rows = []
+        async for k in r.scan_iter(f"{KV_PREFIX}{PLAYBOOK_PREFIX}*", count=200):
+            name = _decode(k).replace(KV_PREFIX, "").replace(PLAYBOOK_PREFIX, "")
+            if name.startswith("_"):
+                continue
+            data = await r.hgetall(k)
+            tags_ = _decode(data.get(b"tags", b""))
+            if mcp_server:
+                safe = _sanitize_tag(mcp_server)
+                if safe and safe not in tags_.split(","):
+                    continue
+            doc = json.loads(_decode(data[b"value"]))
+            ts = _fmt_ts(data.get(b"timestamp", b"0"))
+            servers = ", ".join(doc.get("mcp_servers") or []) or "any"
+            rows.append(
+                f"[{ts}] {name} v{doc.get('version', 1)} — {doc.get('description', '')[:70]}  "
+                f"servers=[{servers}]  steps={len(doc.get('steps') or [])}"
+            )
+    finally:
+        await r.aclose()
+
+    return "\n".join(sorted(rows)) if rows else "No playbooks saved yet."
+
+
+@mcp.tool()
+async def playbook_delete(task_id: str) -> str:
+    """Delete a cached MCP workflow and its semantic search alias.
+
+    Parameters:
+    - task_id (required): The playbook slug passed to playbook_save().
+    """
+    safe_id = _sanitize_task_id(task_id)
+    r = _redis()
+    mem_id = ""
+    try:
+        redis_key = f"{KV_PREFIX}{PLAYBOOK_PREFIX}{safe_id}"
+        data = await r.hgetall(redis_key)
+        if not data:
+            return f"No playbook found for '{safe_id}'"
+        mem_id = _decode(data.get(b"mem_id", b""))
+        await r.delete(redis_key)
+    finally:
+        await r.aclose()
+
+    if mem_id:
+        await mem_delete(mem_id)
+
+    return f"Deleted playbook[{safe_id}]"
+
+
+@mcp.tool()
+async def playbook_resolve(user_request: str, mcp_server: str = "", min_similarity: float = 35.0) -> str:
+    """Resolve a user request to a cached MCP workflow — preferred entry point before multi-step tasks.
+
+    1. Tries exact task_id if user_request looks like a slug.
+    2. Runs playbook_search() for semantic matches.
+    3. Returns full playbook JSON when similarity >= min_similarity (default 35%).
+
+    Parameters:
+    - user_request (required): Raw user prompt or task description.
+    - mcp_server: Optional MCP server filter.
+    - min_similarity: Minimum similarity percent to accept a semantic match (default 35).
+    """
+    candidate = _sanitize_task_id(user_request) if TASK_ID_RE.match(user_request.strip().lower()) else ""
+    if candidate:
+        r = _redis()
+        try:
+            if await r.exists(f"{KV_PREFIX}{PLAYBOOK_PREFIX}{candidate}"):
+                doc = await _load_playbook_doc(r, candidate)
+                if doc:
+                    return json.dumps({"match": "exact", "similarity": 100.0, "playbook": doc}, indent=2)
+        finally:
+            await r.aclose()
+
+    search_out = await _playbook_search_text(user_request, mcp_server, top_k=1)
+    if search_out == "No memories found.":
+        return (
+            "No cached playbook. Discover the workflow using available MCP tools, "
+            "then playbook_save() before repeating this task."
+        )
+
+    first_block = search_out.split("\n")[0]
+    sim_match = re.search(r"\[(\d+(?:\.\d+)?)%", first_block)
+    similarity = float(sim_match.group(1)) if sim_match else 0.0
+    if similarity < min_similarity:
+        return (
+            f"Best playbook match was {similarity}% (below {min_similarity}%). "
+            "Discover the workflow, then playbook_save()."
+        )
+
+    id_match = re.search(r"ID:([0-9a-f]{8})", first_block)
+    if not id_match:
+        return search_out + "\n\n(Could not resolve task_id — call playbook_search() manually.)"
+
+    prefix = id_match.group(1)
+    r = _redis()
+    task_id = ""
+    try:
+        async for k in r.scan_iter(f"{KV_PREFIX}{PLAYBOOK_PREFIX}*", count=200):
+            data = await r.hgetall(k)
+            linked = _decode(data.get(b"mem_id", b""))
+            if linked.startswith(prefix):
+                task_id = _decode(k).replace(KV_PREFIX, "").replace(PLAYBOOK_PREFIX, "")
+                break
+        if not task_id:
+            return search_out
+        doc = await _load_playbook_doc(r, task_id)
+    finally:
+        await r.aclose()
+
+    if not doc:
+        return search_out
+
+    return json.dumps({"match": "semantic", "similarity": similarity, "playbook": doc}, indent=2)
 
 
 # ── Unified search ────────────────────────────────────────────────────────────

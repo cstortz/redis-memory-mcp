@@ -8,47 +8,64 @@ Long-term self-managing memory for LLM agents (Cursor, Claude Code, etc.) via [M
 
 - **Semantic search** (`mem_*`) — save facts with vector embeddings, find by meaning
 - **Key-value store** (`kv_*`) — instant O(1) lookup for named facts
+- **MCP playbooks** (`playbook_*`) — cache multi-step MCP workflows for any server (see [PLAYBOOKS.md](PLAYBOOKS.md))
 - **Auto-expiry** — TTL resets on every read; unused facts expire, popular ones live forever
 - **Multi-project** — tag-based isolation between projects
-- **Self-contained** — Docker stack: Redis Stack + HuggingFace TEI embeddings + MCP server
+- **Self-contained** — Docker Compose locally, Kubernetes + GitHub Actions for production (see [k8s/README.md](k8s/README.md))
 
-## Quick Start
+## Quick Start (local)
 
 ```bash
-# 1. Clone
-git clone https://github.com/yourname/redis-memory-mcp
+git clone https://github.com/sergesha/redis-memory-mcp
 cd redis-memory-mcp
-
-# 2. Start infrastructure
-docker compose up -d
-
-# 3. Add to your AI tool's MCP config
+docker compose up -d redis embeddings
+python3 -m venv .venv
+.venv/bin/pip install "mcp[cli]>=1.0.0" "redis>=5.0.0" "httpx>=0.27.0" "numpy>=1.26.0"
 ```
 
-### Cursor (`~/.cursor/mcp.json`)
+### Cursor — local dev (`~/.cursor/mcp.json`)
 
 ```json
-{
-  "mcpServers": {
-    "redis-memory-mcp": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "-e", "REDIS_URL=redis://host.docker.internal:6379/0",
-        "-e", "EMBED_URL=http://host.docker.internal:8081",
-        "-e", "INDEX_NAME=idx:memories",
-        "redis-memory-mcp"
-      ]
-    }
+"redis-memory-mcp": {
+  "command": "/path/to/redis-memory-mcp/.venv/bin/python",
+  "args": ["/path/to/redis-memory-mcp/server/memory_mcp.py"],
+  "env": {
+    "REDIS_URL": "redis://127.0.0.1:6380/0",
+    "EMBED_URL": "http://127.0.0.1:8081",
+    "INDEX_NAME": "idx:memories"
   }
 }
 ```
+
+### Cursor — Kubernetes (TCP, same as other MCP servers)
+
+```json
+"redis-memory-mcp": {
+  "command": "socat",
+  "args": ["TCP:monorepo-mcp.dev.stortz.tech:3006", "STDIO"]
+}
+```
+
+Deploy via GitHub Actions **Deploy** workflow or `./scripts/deploy.sh deploy`. Details: [k8s/README.md](k8s/README.md).
 
 ### Claude Code
 
 Works automatically via `.mcp.json` in the repo root when using as a Claude plugin.
 
-## Tools (8 total)
+## Tools (14 total)
+
+### MCP workflow playbooks — any server
+
+| Tool | Description |
+|------|-------------|
+| `playbook_resolve(user_request, mcp_server?, min_similarity?)` | Match prompt → cached workflow (start here) |
+| `playbook_get(task_id)` | Load playbook JSON by slug |
+| `playbook_search(query, mcp_server?, top_k?)` | Semantic playbook search |
+| `playbook_save(task_id, description, steps, ...)` | Save workflow after first success |
+| `playbook_list(mcp_server?)` | List saved playbooks |
+| `playbook_delete(task_id)` | Remove playbook |
+
+See [PLAYBOOKS.md](PLAYBOOKS.md) for the JSON step schema.
 
 ### Key-Value Storage — instant lookup
 
@@ -97,7 +114,7 @@ Works automatically via `.mcp.json` in the repo root when using as a Claude plug
 
 - **Redis Stack** — RediSearch module with HNSW vector index (768 dim, cosine)
 - **TEI** — `paraphrase-multilingual-mpnet-base-v2` (multilingual, runs on CPU)
-- **MCP server** — Python FastMCP over stdio
+- **MCP server** — Python FastMCP over stdio; sends agent instructions from `server/INSTRUCTIONS.md` on connect
 
 ## Environment Variables
 
