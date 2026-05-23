@@ -59,8 +59,7 @@ spec:
               memory: 4Gi
       volumes:
         - name: cache
-          persistentVolumeClaim:
-            claimName: embeddings-cache
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

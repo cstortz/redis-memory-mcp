@@ -17,8 +17,6 @@ spec:
         app.kubernetes.io/name: mcp-redis-memory
         app.kubernetes.io/component: mcp-server
     spec:
-      imagePullSecrets:
-        - name: ghcr-pull
       initContainers:
         - name: wait-redis
           image: redis/redis-stack:latest
@@ -36,9 +34,14 @@ spec:
               until curl -sf http://embeddings/health; do echo waiting for embeddings; sleep 5; done
       containers:
         - name: mcp-redis-memory
-          image: ghcr.io/sergesha/redis-memory-mcp/mcp-server:latest
-          imagePullPolicy: Always
-          command: ["python", "tcp_server.py"]
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              pip install --no-cache-dir "mcp[cli]>=1.0.0" "redis>=5.0.0" "httpx>=0.27.0" "numpy>=1.26.0"
+              exec python /app/tcp_server.py
           ports:
             - name: mcp-tcp
               containerPort: 3006
@@ -48,23 +51,31 @@ spec:
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
           livenessProbe:
             tcpSocket:
               port: mcp-tcp
-            initialDelaySeconds: 20
+            initialDelaySeconds: 60
             periodSeconds: 20
           readinessProbe:
             tcpSocket:
               port: mcp-tcp
-            initialDelaySeconds: 10
+            initialDelaySeconds: 45
             periodSeconds: 5
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 384Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 768Mi
+      volumes:
+        - name: src
+          configMap:
+            name: mcp-redis-memory-src
 ---
 apiVersion: v1
 kind: Service

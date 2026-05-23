@@ -1,0 +1,31 @@
+# Optional PVCs when the cluster has a default StorageClass.
+# Clusters without storage (e.g. bare kubeadm) use emptyDir in redis-stack.yaml / embeddings.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-stack-data
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: redis-stack
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embeddings-cache
+  namespace: redis-memory
+  labels:
+    app.kubernetes.io/name: embeddings
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard

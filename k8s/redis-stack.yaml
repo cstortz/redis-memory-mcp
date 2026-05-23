@@ -54,8 +54,7 @@ spec:
               memory: 2560Mi
       volumes:
         - name: data
-          persistentVolumeClaim:
-            claimName: redis-stack-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

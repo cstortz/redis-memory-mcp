@@ -121,8 +121,6 @@ jobs:
 
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/configmap.yaml
-          kubectl apply -f k8s/pvc-redis.yaml
-          kubectl apply -f k8s/pvc-embeddings.yaml
           kubectl apply -f k8s/redis-stack.yaml
           kubectl apply -f k8s/embeddings.yaml
           kubectl apply -f k8s/mcp-redis-memory.yaml

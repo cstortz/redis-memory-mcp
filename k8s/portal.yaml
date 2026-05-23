@@ -20,12 +20,7 @@ data:
     <body>
       <h1>Redis Memory MCP</h1>
       <p>Connect over TCP to <strong>monorepo-mcp.dev.stortz.tech:3006</strong></p>
-      <p>Cursor <code>mcp.json</code>:</p>
-      <pre><code>"redis-memory-mcp": {
-  "command": "socat",
-  "args": ["TCP:monorepo-mcp.dev.stortz.tech:3006", "STDIO"]
-}</code></pre>
-      <p><a href="endpoints.json">endpoints.json</a></p>
+      <p>Cursor config: see <a href="endpoints.json">endpoints.json</a></p>
     </body>
     </html>
   endpoints.json: |
